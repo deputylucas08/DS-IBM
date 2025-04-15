@@ -1,0 +1,97 @@
+import osmnx as ox
+import geopandas as gpd
+import folium
+from shapely.geometry import Point, LineString
+
+# Conversion constant
+METER_TO_MILES = 1 / 1609.34
+
+# Create interactive map
+site_map = folium.Map(
+    location=[launch_sites_df['Lat'].mean(), launch_sites_df['Len'].mean()],
+    zoom_start=3
+)
+
+# Loop through each launch site
+for _, row in launch_sites_df.iterrows():
+    site_name = row['Launch Site']
+    lat, lon = row['Lat'], row['Len']
+    site_point = Point(lon, lat)
+
+    # Add launch site marker
+    folium.Marker(
+        location=[lat, lon],
+        popup=site_name,
+        icon=folium.Icon(color='blue', icon='rocket', prefix='fa')
+    ).add_to(site_map)
+
+    # Define search tags and colors
+    tags_dict = {
+        'Railway': {'railway': True},
+        'Highway': {'highway': ['motorway', 'trunk']},
+        'City': {'place': ['city', 'town']}
+    }
+
+    colors = {
+        'Railway': 'red',
+        'Highway': 'green',
+        'City': 'purple'
+    }
+
+    for label, tags in tags_dict.items():
+        try:
+            features = ox.geometries_from_point((lat, lon), tags=tags, dist=10000)
+            features = features[features.geometry.notnull()]
+
+            if not features.empty:
+                gdf = gpd.GeoDataFrame(features, geometry=features.geometry)
+                gdf['distance'] = gdf.distance(site_point)
+                closest = gdf.loc[gdf['distance'].idxmin()]
+                geom = closest.geometry
+
+                # Get nearest point for the connecting line
+                if geom.geom_type in ['LineString', 'Polygon']:
+                    nearest_point = geom.interpolate(geom.project(site_point))
+                elif geom.geom_type == 'Point':
+                    nearest_point = geom
+                else:
+                    continue
+
+                distance_miles = site_point.distance(nearest_point) * METER_TO_MILES
+                tooltip_text = f"Closest {label}: {distance_miles:.2f} miles"
+
+                # Add closest object marker
+                if geom.geom_type == 'LineString':
+                    folium.PolyLine(
+                        locations=[(pt[1], pt[0]) for pt in geom.coords],
+                        color=colors[label],
+                        weight=3,
+                        tooltip=f"{label} Line"
+                    ).add_to(site_map)
+                elif geom.geom_type == 'Point':
+                    folium.Marker(
+                        location=[geom.y, geom.x],
+                        popup=f"{label} Point",
+                        icon=folium.Icon(color=colors[label])
+                    ).add_to(site_map)
+                elif geom.geom_type == 'Polygon':
+                    folium.Marker(
+                        location=[geom.centroid.y, geom.centroid.x],
+                        popup=f"{label} Area",
+                        icon=folium.Icon(color=colors[label])
+                    ).add_to(site_map)
+
+                # Draw dashed line showing distance
+                folium.PolyLine(
+                    locations=[[lat, lon], [nearest_point.y, nearest_point.x]],
+                    color=colors[label],
+                    weight=2,
+                    dash_array='5',
+                    tooltip=tooltip_text
+                ).add_to(site_map)
+
+        except Exception as e:
+            print(f"{label} not found for {site_name}: {e}")
+
+# Render the map
+site_map
